@@ -1,7 +1,6 @@
+// Implementation is in the header file for OJ submission compatibility
+// This file exists for local development purposes
+
 #include "int2048.h"
 
-namespace sjtu {
-
-int2048::int2048() {}
-
-} // namespace sjtu
+// All implementations are in the header file
