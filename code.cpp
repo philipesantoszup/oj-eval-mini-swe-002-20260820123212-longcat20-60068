@@ -14,6 +14,7 @@
 #include <cstring>
 #include <iostream>
 #include <vector>
+#include <algorithm>
 
 // Do not use "using namespace std;"
 
@@ -23,6 +24,7 @@ class int2048 {
 private:
     static const int BASE = 1000000000;  // 10^9
     static const int BASE_DIGITS = 9;
+    static const int KARATSUBA_THRESHOLD = 32;  // Threshold for Karatsuba
     
     std::vector<int> digits;  // digits stored in little-endian order
     bool negative;  // true if number is negative
@@ -97,8 +99,8 @@ private:
         return res;
     }
     
-    // Multiply absolute values
-    static int2048 absMul(const int2048 &a, const int2048 &b) {
+    // Simple O(n^2) multiplication for small numbers
+    static int2048 absMulSimple(const int2048 &a, const int2048 &b) {
         if (a.isZero() || b.isZero()) return int2048();
         
         int2048 res;
@@ -116,6 +118,75 @@ private:
         res.negative = false;
         res.trim();
         return res;
+    }
+    
+    // Karatsuba multiplication for large numbers
+    static int2048 absMulKaratsuba(const int2048 &a, const int2048 &b) {
+        if (a.isZero() || b.isZero()) return int2048();
+        
+        // Use simple multiplication for small numbers
+        if (std::min(a.digits.size(), b.digits.size()) < KARATSUBA_THRESHOLD) {
+            return absMulSimple(a, b);
+        }
+        
+        // Make sure a is the longer number
+        if (a.digits.size() < b.digits.size()) {
+            return absMulKaratsuba(b, a);
+        }
+        
+        size_t n = a.digits.size();
+        size_t m = b.digits.size();
+        size_t half = n / 2;
+        
+        // Split a into a1 * BASE^half + a0
+        int2048 a0, a1;
+        a0.negative = false;
+        a1.negative = false;
+        a0.digits.assign(a.digits.begin(), a.digits.begin() + std::min(half, a.digits.size()));
+        a1.digits.assign(a.digits.begin() + std::min(half, a.digits.size()), a.digits.end());
+        a0.trim();
+        a1.trim();
+        
+        // Split b into b1 * BASE^half + b0
+        int2048 b0, b1;
+        b0.negative = false;
+        b1.negative = false;
+        b0.digits.assign(b.digits.begin(), b.digits.begin() + std::min(half, b.digits.size()));
+        b1.digits.assign(b.digits.begin() + std::min(half, b.digits.size()), b.digits.end());
+        b0.trim();
+        b1.trim();
+        
+        // Karatsuba: (a1*B + a0) * (b1*B + b0) = a1*b1*B^2 + (a1*b0 + a0*b1)*B + a0*b0
+        // Let z0 = a0*b0, z2 = a1*b1, z1 = (a0+a1)*(b0+b1) - z0 - z2
+        int2048 z0 = absMulKaratsuba(a0, b0);
+        int2048 z2 = absMulKaratsuba(a1, b1);
+        int2048 z1 = absMulKaratsuba(absAdd(a0, a1), absAdd(b0, b1));
+        z1 = absSub(z1, z0);
+        z1 = absSub(z1, z2);
+        
+        // Combine: z2 * BASE^(2*half) + z1 * BASE^half + z0
+        int2048 res = z2;
+        // Shift by 2*half
+        if (!res.isZero()) {
+            res.digits.insert(res.digits.begin(), 2 * half, 0);
+        }
+        // Add z1 shifted by half
+        if (!z1.isZero()) {
+            int2048 z1Shifted = z1;
+            z1Shifted.digits.insert(z1Shifted.digits.begin(), half, 0);
+            res = absAdd(res, z1Shifted);
+        }
+        // Add z0
+        res = absAdd(res, z0);
+        
+        res.negative = false;
+        res.trim();
+        return res;
+    }
+    
+    // Multiply absolute values
+    static int2048 absMul(const int2048 &a, const int2048 &b) {
+        return absMulKaratsuba(a, b);
     }
     
     // Multiply by single digit (for division algorithm)
