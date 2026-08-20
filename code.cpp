@@ -22,12 +22,49 @@ namespace sjtu {
 class int2048 {
   // todo
 private:
-    static const int BASE = 1000000000;  // 10^9
-    static const int BASE_DIGITS = 9;
-    static const int KARATSUBA_THRESHOLD = 32;  // Threshold for Karatsuba
+    static const int BASE = 1000;  // 10^3 for FFT compatibility
+    static const int BASE_DIGITS = 3;
+    static constexpr double PI = 3.14159265358979323846;
     
     std::vector<int> digits;  // digits stored in little-endian order
     bool negative;  // true if number is negative
+    
+    // FFT for polynomial multiplication
+    using cd = std::complex<double>;
+    
+    static void fft(std::vector<cd> & a, bool invert) {
+        int n = a.size();
+        if (n <= 1) return;
+        
+        for (int i = 1, j = 0; i < n; i++) {
+            int bit = n >> 1;
+            for (; j & bit; bit >>= 1)
+                j ^= bit;
+            j ^= bit;
+            if (i < j)
+                std::swap(a[i], a[j]);
+        }
+        
+        for (int len = 2; len <= n; len <<= 1) {
+            double ang = 2 * PI / len * (invert ? -1 : 1);
+            cd wlen(cos(ang), sin(ang));
+            for (int i = 0; i < n; i += len) {
+                cd w(1);
+                for (int j = 0; j < len / 2; j++) {
+                    cd u = a[i + j];
+                    cd v = a[i + j + len / 2] * w;
+                    a[i + j] = u + v;
+                    a[i + j + len / 2] = u - v;
+                    w *= wlen;
+                }
+            }
+        }
+        
+        if (invert) {
+            for (cd & x : a)
+                x /= n;
+        }
+    }
     
     // Remove leading zeros
     void trim() {
@@ -99,94 +136,70 @@ private:
         return res;
     }
     
-    // Simple O(n^2) multiplication for small numbers
-    static int2048 absMulSimple(const int2048 &a, const int2048 &b) {
-        if (a.isZero() || b.isZero()) return int2048();
-        
-        int2048 res;
-        res.digits.resize(a.digits.size() + b.digits.size(), 0);
-        
-        for (size_t i = 0; i < a.digits.size(); ++i) {
-            long long carry = 0;
-            for (size_t j = 0; j < b.digits.size() || carry; ++j) {
-                long long cur = res.digits[i + j] + 
-                    (long long)a.digits[i] * (j < b.digits.size() ? b.digits[j] : 0) + carry;
-                res.digits[i + j] = cur % BASE;
-                carry = cur / BASE;
-            }
-        }
-        res.negative = false;
-        res.trim();
-        return res;
-    }
-    
-    // Karatsuba multiplication for large numbers
-    static int2048 absMulKaratsuba(const int2048 &a, const int2048 &b) {
+    // FFT-based multiplication for large numbers
+    static int2048 absMulFFT(const int2048 &a, const int2048 &b) {
         if (a.isZero() || b.isZero()) return int2048();
         
         // Use simple multiplication for small numbers
-        if (std::min(a.digits.size(), b.digits.size()) < KARATSUBA_THRESHOLD) {
-            return absMulSimple(a, b);
+        if (std::min(a.digits.size(), b.digits.size()) < 64) {
+            int2048 res;
+            res.digits.resize(a.digits.size() + b.digits.size(), 0);
+            for (size_t i = 0; i < a.digits.size(); ++i) {
+                long long carry = 0;
+                for (size_t j = 0; j < b.digits.size() || carry; ++j) {
+                    long long cur = res.digits[i + j] + 
+                        (long long)a.digits[i] * (j < b.digits.size() ? b.digits[j] : 0) + carry;
+                    res.digits[i + j] = cur % BASE;
+                    carry = cur / BASE;
+                }
+            }
+            res.negative = false;
+            res.trim();
+            return res;
         }
         
-        // Make sure a is the longer number
-        if (a.digits.size() < b.digits.size()) {
-            return absMulKaratsuba(b, a);
-        }
+        // FFT multiplication
+        std::vector<cd> fa(a.digits.begin(), a.digits.end());
+        std::vector<cd> fb(b.digits.begin(), b.digits.end());
         
-        size_t n = a.digits.size();
-        size_t m = b.digits.size();
-        size_t half = n / 2;
+        size_t n = 1;
+        while (n < a.digits.size() + b.digits.size()) 
+            n <<= 1;
         
-        // Split a into a1 * BASE^half + a0
-        int2048 a0, a1;
-        a0.negative = false;
-        a1.negative = false;
-        a0.digits.assign(a.digits.begin(), a.digits.begin() + std::min(half, a.digits.size()));
-        a1.digits.assign(a.digits.begin() + std::min(half, a.digits.size()), a.digits.end());
-        a0.trim();
-        a1.trim();
+        fa.resize(n);
+        fb.resize(n);
         
-        // Split b into b1 * BASE^half + b0
-        int2048 b0, b1;
-        b0.negative = false;
-        b1.negative = false;
-        b0.digits.assign(b.digits.begin(), b.digits.begin() + std::min(half, b.digits.size()));
-        b1.digits.assign(b.digits.begin() + std::min(half, b.digits.size()), b.digits.end());
-        b0.trim();
-        b1.trim();
+        fft(fa, false);
+        fft(fb, false);
         
-        // Karatsuba: (a1*B + a0) * (b1*B + b0) = a1*b1*B^2 + (a1*b0 + a0*b1)*B + a0*b0
-        // Let z0 = a0*b0, z2 = a1*b1, z1 = (a0+a1)*(b0+b1) - z0 - z2
-        int2048 z0 = absMulKaratsuba(a0, b0);
-        int2048 z2 = absMulKaratsuba(a1, b1);
-        int2048 z1 = absMulKaratsuba(absAdd(a0, a1), absAdd(b0, b1));
-        z1 = absSub(z1, z0);
-        z1 = absSub(z1, z2);
+        for (size_t i = 0; i < n; ++i)
+            fa[i] *= fb[i];
         
-        // Combine: z2 * BASE^(2*half) + z1 * BASE^half + z0
-        int2048 res = z2;
-        // Shift by 2*half
-        if (!res.isZero()) {
-            res.digits.insert(res.digits.begin(), 2 * half, 0);
-        }
-        // Add z1 shifted by half
-        if (!z1.isZero()) {
-            int2048 z1Shifted = z1;
-            z1Shifted.digits.insert(z1Shifted.digits.begin(), half, 0);
-            res = absAdd(res, z1Shifted);
-        }
-        // Add z0
-        res = absAdd(res, z0);
+        fft(fa, true);
         
+        int2048 res;
         res.negative = false;
+        res.digits.resize(n);
+        
+        long long carry = 0;
+        for (size_t i = 0; i < n; ++i) {
+            long long cur = carry + (long long)(fa[i].real() + 0.5);
+            res.digits[i] = cur % BASE;
+            carry = cur / BASE;
+        }
+        
+        while (carry) {
+            res.digits.push_back(carry % BASE);
+            carry /= BASE;
+        }
+        
         res.trim();
         return res;
     }
     
     // Multiply absolute values
     static int2048 absMul(const int2048 &a, const int2048 &b) {
-        return absMulKaratsuba(a, b);
+        return absMulFFT(a, b);
     }
     
     // Multiply by single digit (for division algorithm)
@@ -217,7 +230,11 @@ public:
       if (x > 0) {
           digits.push_back(x % BASE);
           if (x >= BASE) {
-              digits.push_back(x / BASE);
+              x /= BASE;
+              while (x > 0) {
+                  digits.push_back(x % BASE);
+                  x /= BASE;
+              }
           }
       }
   }
@@ -279,7 +296,7 @@ public:
       // Print remaining digits with leading zeros
       char buf[10];
       for (int i = (int)digits.size() - 2; i >= 0; --i) {
-          snprintf(buf, sizeof(buf), "%09d", digits[i]);
+          snprintf(buf, sizeof(buf), "%03d", digits[i]);
           std::cout << buf;
       }
   }
@@ -538,7 +555,7 @@ public:
       // Print remaining digits with leading zeros
       char buf[10];
       for (int i = (int)x.digits.size() - 2; i >= 0; --i) {
-          snprintf(buf, sizeof(buf), "%09d", x.digits[i]);
+          snprintf(buf, sizeof(buf), "%03d", x.digits[i]);
           os << buf;
       }
       
